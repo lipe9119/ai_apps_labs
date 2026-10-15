@@ -1,0 +1,19 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+*.json
+*.txt
+*.wav
+
+voice/models
+
+# gravacoes do ditado (apps/data/transcricoes)
+apps/data/
