@@ -2,16 +2,18 @@
 
 Estudo de reconhecimento de voz em 4 niveis, no mesmo formato do Face Lab. Tudo roda em CPU.
 
-## Instalar (Python 3.9 a 3.12)
+## Instalar (Python >= 3.11)
+
+Na raiz do repositorio existe **uma unica env** para face + voice + apps
+(`pyproject.toml` + `uv.lock`, geridos pelo [uv](https://docs.astral.sh/uv/)):
 
 ```
-python -m venv .venv
-# Windows: .venv\Scripts\activate    |  Linux/macOS: source .venv/bin/activate
-# Linux: instale antes o PortAudio ->  sudo apt install libportaudio2
-# Linux: torch so CPU (evita baixar CUDA, ~2 GB):
-#   pip install "torch<2.9" "torchaudio<2.9" --index-url https://download.pytorch.org/whl/cpu
-pip install -r requirements.txt
+uv sync
 ```
+
+- Linux: instale antes o PortAudio -> `sudo apt install libportaudio2`
+- Linux: torch so CPU (evita baixar CUDA, ~2 GB), rode depois do sync:
+  `uv pip install "torch==2.8" "torchaudio==2.8" --index-url https://download.pytorch.org/whl/cpu`
 
 Na primeira execucao dos niveis 2 a 4 os modelos sao baixados (ECAPA ~80 MB, Whisper base ~140 MB) para `models/`.
 Se der erro de permissao/symlink no Windows, ative o Modo Desenvolvedor ou rode o terminal como administrador.

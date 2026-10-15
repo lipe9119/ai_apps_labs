@@ -2,17 +2,20 @@
 
 Estudo de reconhecimento facial em 3 niveis. Tudo roda em CPU.
 
-## Instalar (Python 3.9 a 3.12)
+## Instalar (Python >= 3.11)
+
+Na raiz do repositorio existe **uma unica env** para face + voice + apps
+(`pyproject.toml` + `uv.lock`, geridos pelo [uv](https://docs.astral.sh/uv/)):
 
 ```
-python -m venv .venv
-# Windows: .venv\Scripts\activate    |  Linux/macOS: source .venv/bin/activate
-pip install -r requirements.txt
-pip install face_recognition --no-deps
+uv sync
 ```
 
-`dlib-bin` traz o dlib ja compilado (evita instalar CMake/Visual Studio).
-Se der erro de `pkg_resources`, confira se o `setuptools<81` foi instalado.
+- Na primeira sync o `dlib` e compilado a partir do fonte (uns minutos): no macOS
+  `xcode-select --install` e `brew install cmake`; no Linux `apt install build-essential cmake`.
+  O `dlib-bin` (wheel) cobre o modulo; o `dlib` vem do `face-recognition`.
+- Prefere venv classico? `python -m venv .venv && source .venv/bin/activate && pip install -e .`
+  (mesma compilacao do dlib).
 
 ## Usar
 

@@ -17,3 +17,6 @@ voice/models
 
 # gravacoes do ditado (apps/data/transcricoes)
 apps/data/
+
+# macOS
+.DS_Store
