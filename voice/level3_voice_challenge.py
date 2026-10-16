@@ -4,7 +4,9 @@ O sistema sorteia digitos na hora. Voce precisa:
   1) dizer EXATAMENTE esses digitos (Whisper transcreve e confere o conteudo), e
   2) a voz tem que ser de alguem cadastrado (ECAPA confere o locutor).
 Uma gravacao antiga nao sabe quais digitos serao pedidos.
-ENTER/ESPACO = novo desafio. Sair: q / ESC.   Opcoes: --list-devices | --device N
+ENTER/ESPACO = novo desafio. Sair: q / ESC.
+Opcoes: --list-devices | --device N | --whisper MODELO | --whisper-device auto|cuda|cpu
+        (ex.: --whisper large-v3-turbo --whisper-device cuda). Veja bench_whisper.py.
 """
 import time
 
@@ -59,12 +61,13 @@ def main():
         for _, b in mic.blocks():
             roll.push(b)
             rms = float(np.sqrt(np.mean(b ** 2)))
-            if stage == "listen":
+            if stage in ("prep", "listen"):
                 speaking = det.feed(b) or speaking
 
         if key in (ord("q"), 27):
             break
         if key in (13, 32) and stage == "idle":
+            det.reset()
             digits, stage, t0 = vc.random_digits(), "prep", now
 
         if stage == "idle":
@@ -74,10 +77,8 @@ def main():
         elif stage in ("prep", "listen"):
             big = "   ".join(map(str, digits))
             if stage == "prep":
-                vc.banner(img, "Prepare-se...", vc.YELLOW)
+                vc.banner(img, "Prepare-se... (pode falar quando quiser)", vc.YELLOW)
                 if now - t0 >= PREP_S:
-                    det.reset()
-                    mic.drain()
                     stage, t0 = "listen", now
             else:
                 vc.banner(img, "DIGA OS NUMEROS EM VOZ ALTA", vc.GREEN if speaking else vc.YELLOW)

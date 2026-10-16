@@ -11,7 +11,8 @@ Fluxo:
   4. GRANTED -> liberado enquanto o rosto continuar la (checagem leve). Aperte V para refazer a prova de voz.
 
 Requisitos: a pasta face/ ao lado desta (no mesmo projeto) com rostos cadastrados,
-e voz cadastrada com o MESMO NOME. Sair: q / ESC.   Opcoes: --list-devices | --device N
+e voz cadastrada com o MESMO NOME. Sair: q / ESC.
+Opcoes: --list-devices | --device N | --whisper MODELO | --whisper-device auto|cuda|cpu
 """
 
 import os
@@ -96,6 +97,9 @@ def main():
     def begin_voice(now):
         nonlocal phase, t0, digits
         digits, phase, t0 = vc.random_digits(), "PREP", now
+        det.reset()
+        for buf in (mar_ts, mar_vals, aud_ts, aud_rms):
+            buf.clear()
 
     while True:
         frame = read_mirrored(cap)
@@ -108,7 +112,7 @@ def main():
         text, color, sub = "", GRAY, ""
         delay = 1
         fail = None
-        if phase != "LISTEN":
+        if phase not in ("PREP", "LISTEN"):
             mic.drain()  # evita a fila de audio crescer fora da escuta
 
         if phase == "FACE":
@@ -129,16 +133,23 @@ def main():
                 if auth.state != "VERIFIED":
                     fail = "Rosto perdido ou trocado durante a prova de voz"
 
+            # Consome o audio ANTES de ramificar: assim quem comeca a falar
+            # durante o "prepare-se" nao perde o primeiro digito.
+            if face is not None:
+                mar_ts.append(now)
+                mar_vals.append(mouth_open_ratio(face))
+            for t, b in mic.blocks():
+                aud_ts.append(t)
+                aud_rms.append(float(np.sqrt(np.mean(b**2))))
+                det.feed(b)
+
             if phase == "PREP":
                 text, color, sub = (
                     f"Ola, {face_user}! Prepare-se...",
                     YELLOW,
-                    "Voce vai dizer 4 numeros",
+                    "Pode falar quando quiser: voce vai dizer 4 numeros",
                 )
                 if now - t0 >= PREP_S:
-                    det.reset()
-                    mic.drain()
-                    mar_ts, mar_vals, aud_ts, aud_rms = [], [], [], []
                     phase, t0 = "LISTEN", now
             else:
                 text, color, sub = (
@@ -146,13 +157,6 @@ def main():
                     YELLOW,
                     "olhe para a camera",
                 )
-                if face is not None:
-                    mar_ts.append(now)
-                    mar_vals.append(mouth_open_ratio(face))
-                for t, b in mic.blocks():
-                    aud_ts.append(t)
-                    aud_rms.append(float(np.sqrt(np.mean(b**2))))
-                    det.feed(b)
                 if det.done:
                     cv2.rectangle(frame, (0, 0), (w, 48), YELLOW, -1)
                     draw_text(frame, "Analisando voz e labios...", (12, 33), scale=0.75)

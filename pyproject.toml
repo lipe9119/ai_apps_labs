@@ -14,7 +14,9 @@ dependencies = [
     "numpy>=2.4.6",
     "opencv-python>=5.0.0.93",
     "pillow>=12.3.0",
-    "pyside6-essentials>=6.12.0",
+    # 6.12.0 tem regressao no Linux: crash em paintEvent (Fatal Python error: none_dealloc).
+    # Ver README > Instalacao. 6.11.2 tem wheels para Linux, macOS e Windows.
+    "pyside6-essentials>=6.11.2,<6.12",
     "setuptools>=81,<82",
     "sounddevice>=0.5.6",
     "speechbrain>=1.1.2",

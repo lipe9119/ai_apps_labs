@@ -28,11 +28,22 @@ MODEL_DIR = Path(__file__).parent / "models"
 VOICE_THRESHOLD = 0.45            # similaridade (cosseno) minima p/ aceitar o locutor. Maior = mais rigido
 MIN_SPEECH_S = 1.5                # fala minima (s) para cadastro
 ENERGY_MIN = 0.004                # RMS minimo para um bloco contar como fala
-WHISPER_MODEL = "base"            # tiny (mais rapido) | base | small (mais preciso)
 N_DIGITS = 4                      # tamanho do desafio de digitos
 MAX_DIGIT_ERRORS = 0              # erros tolerados no desafio (distancia de edicao)
 LIPSYNC_MIN_CORR = 0.25           # correlacao minima entre abertura da boca e volume da voz
 MIN_MAR_RANGE = 0.04              # variacao minima da abertura da boca (rosto parado = reprova)
+
+# Whisper (transcricao). Pode vir do ambiente (WHISPER_MODEL, WHISPER_DEVICE, ...) ou da linha
+# de comando (--whisper, --whisper-device, ...). Modelos maiores = mais precisos e mais lentos;
+# numa GPU (ex.: RTX 3060) o large-v3-turbo ainda responde rapido. Rode `python bench_whisper.py`
+# para comparar velocidade x texto na SUA maquina antes de escolher.
+WHISPER_MODELS = ("tiny", "base", "small", "medium", "large-v3", "distil-large-v3", "large-v3-turbo")
+WHISPER_MODEL = os.environ.get("WHISPER_MODEL", "base")
+WHISPER_DEVICE = os.environ.get("WHISPER_DEVICE", "auto")      # auto | cuda | cpu
+WHISPER_COMPUTE = os.environ.get("WHISPER_COMPUTE", "auto")    # auto | int8 | int8_float16 | float16 | float32
+WHISPER_THREADS = int(os.environ.get("WHISPER_THREADS", "0")) or None   # None = automatico (nucleos da CPU)
+WHISPER_BEAM = int(os.environ.get("WHISPER_BEAM", "5"))        # 1 = mais rapido, 5 = mais preciso
+DIGIT_HOTWORDS = "zero um dois tres quatro cinco seis sete oito nove"
 
 # ---------------------------------------------------------------- cores (BGR) e canvas
 GREEN = (60, 180, 60)
@@ -46,10 +57,32 @@ W, H = 640, 360
 
 # ---------------------------------------------------------------- argumentos
 def parse_args(desc=""):
-    p = argparse.ArgumentParser(description=desc)
+    global WHISPER_MODEL, WHISPER_DEVICE, WHISPER_COMPUTE, WHISPER_THREADS, WHISPER_BEAM
+    p = argparse.ArgumentParser(
+        description=desc,
+        epilog="Modelos de Whisper: " + ", ".join(WHISPER_MODELS)
+        + " (ex.: --whisper large-v3-turbo). Rode `python bench_whisper.py` para comparar velocidades.",
+    )
     p.add_argument("--device", help="indice ou parte do nome do microfone")
     p.add_argument("--list-devices", action="store_true", help="lista os dispositivos de audio e sai")
+    p.add_argument("--whisper", metavar="MODELO", help=f"modelo do Whisper (padrao: {WHISPER_MODEL})")
+    p.add_argument("--whisper-device", choices=("auto", "cuda", "cpu"),
+                   help=f"onde rodar o Whisper (padrao: {WHISPER_DEVICE}; auto = tenta a GPU)")
+    p.add_argument("--whisper-compute", choices=("auto", "int8", "int8_float16", "float16", "float32"),
+                   help=f"precisao do Whisper (padrao: {WHISPER_COMPUTE})")
+    p.add_argument("--whisper-threads", type=int, help="threads de CPU para o Whisper (padrao: automatico)")
+    p.add_argument("--whisper-beam", type=int, help=f"beam size do Whisper (padrao: {WHISPER_BEAM}; 1 = mais rapido)")
     a = p.parse_args()
+    if a.whisper:
+        WHISPER_MODEL = a.whisper
+    if a.whisper_device:
+        WHISPER_DEVICE = a.whisper_device
+    if a.whisper_compute:
+        WHISPER_COMPUTE = a.whisper_compute
+    if a.whisper_threads:
+        WHISPER_THREADS = a.whisper_threads
+    if a.whisper_beam:
+        WHISPER_BEAM = a.whisper_beam
     if a.list_devices:
         import sounddevice as sd
         print(sd.query_devices())
@@ -97,9 +130,13 @@ class Mic:
 
 
 class UtteranceDetector:
-    """Junta blocos em 'enunciados' (uma frase). Comeca quando ha fala sustentada e termina apos silencio."""
+    """Junta blocos em 'enunciados' (uma frase). Comeca quando ha fala sustentada e termina apos silencio.
 
-    def __init__(self, aggressiveness=2, start_frames=5, end_silence=0.8, max_seconds=10.0, preroll=0.3):
+    O `preroll` guarda audio ANTES da ativacao: sem ele o comeco da fala (o primeiro digito,
+    por exemplo) se perde, porque o VAD so confirma a fala alguns quadros depois do onset.
+    """
+
+    def __init__(self, aggressiveness=1, start_frames=3, end_silence=0.8, max_seconds=10.0, preroll=0.6):
         self.aggr, self.start_frames = aggressiveness, start_frames
         self.end_silence, self.max_seconds, self.preroll = end_silence, max_seconds, preroll
         self.vad = None
@@ -217,16 +254,111 @@ def identify_voice(emb, db):
 
 
 # ---------------------------------------------------------------- fala -> texto e desafio de digitos
+def whisper_device(device):
+    """'auto' -> 'cuda' se o ctranslate2 enxergar GPU, senao 'cpu'."""
+    if device != "auto":
+        return device
+    try:
+        import ctranslate2
+        if ctranslate2.get_cuda_device_count() > 0:
+            return "cuda"
+    except Exception:
+        pass
+    return "cpu"
+
+
+def whisper_compute(device, compute):
+    """'auto' -> float16 na GPU (rapido) e int8 na CPU (leve)."""
+    if compute != "auto":
+        return compute
+    return "float16" if device == "cuda" else "int8"
+
+
+def preload_cuda_libs():
+    """Deixa o ctranslate2 achar o cublas/cudnn instalados via pip (nvidia-*-cu12).
+
+    Nesses venvs o CUDA nao esta no LD_LIBRARY_PATH e o ctranslate2 abre as libs pelo
+    nome (dlopen) na 1a transcricao -> erro 'Library libcublas.so.12 is not found'.
+    Carregar aqui com RTLD_GLOBAL deixa os simbolos disponiveis. Silencioso se nao achar.
+    """
+    import ctypes
+    import glob
+    import site
+    try:
+        roots = list(site.getsitepackages()) + [site.getusersitepackages()]
+    except Exception:
+        return
+    for root in roots:
+        nvidia = os.path.join(root, "nvidia")
+        for pat in ("cublas/lib/libcublasLt.so.12", "cublas/lib/libcublas.so.12", "cudnn/lib/libcudnn.so.9"):
+            for lib in sorted(glob.glob(os.path.join(nvidia, pat))):
+                try:
+                    ctypes.CDLL(lib, mode=ctypes.RTLD_GLOBAL)
+                except OSError:
+                    pass
+
+
+def default_whisper_threads():
+    return max(2, min(8, (os.cpu_count() or 4) // 2))
+
+
 class Transcriber:
-    def __init__(self, size=WHISPER_MODEL):
+    """faster-whisper. Modelo/device/precisao vem de WHISPER_* (ou dos --whisper-* da linha de comando).
+
+    Numa GPU (ex.: RTX 3060 12 GB) cabem large-v3 e large-v3-turbo em float16; a CPU fica no int8.
+    Se pedir cuda e faltar a lib CUDA/cuDNN do ctranslate2, avisa e cai para a CPU automaticamente.
+    Compare velocidades com `python bench_whisper.py`.
+    """
+
+    def __init__(self, size=None, device=None, compute=None, threads=None, beam=None):
         from faster_whisper import WhisperModel
-        self.model = WhisperModel(size, device="cpu", compute_type="int8", cpu_threads=2,
-                                  download_root=str(MODEL_DIR / "whisper"))
+        self._WhisperModel = WhisperModel
+        self.size = size or WHISPER_MODEL
+        self.device = whisper_device(device or WHISPER_DEVICE)
+        self.compute = whisper_compute(self.device, compute or WHISPER_COMPUTE)
+        self.threads = threads or WHISPER_THREADS or default_whisper_threads()
+        self.beam = beam or WHISPER_BEAM
+        self._kwargs = dict(cpu_threads=self.threads, download_root=str(MODEL_DIR / "whisper"))
+        if self.device == "cuda":
+            preload_cuda_libs()
+        try:
+            self.model = self._build(self.device, self.compute)
+            if self.device == "cuda":
+                self._warmup()          # as libs CUDA so carregam na 1a transcricao: falha aqui, nao no meio da prova
+        except Exception as e:
+            if self.device != "cuda":
+                raise
+            print(f"Nao consegui rodar o Whisper na GPU ({e}).\n"
+                  "Caindo para a CPU. Para usar a GPU, instale a lib CUDA 12 + cuBLAS/cuDNN do ctranslate2\n"
+                  "(ou rode com --whisper-device cpu para nao ver este aviso).")
+            self.device, self.compute = "cpu", "int8"
+            self.model = self._build("cpu", self.compute)
+        print(f"Whisper: {self.size} @ {self.device} ({self.compute}), threads {self.threads}")
+
+    def _build(self, device, compute):
+        return self._WhisperModel(self.size, device=device, compute_type=compute, **self._kwargs)
+
+    def _warmup(self):
+        segs, _ = self.model.transcribe(np.zeros(int(SR * 0.3), np.float32), language="pt", beam_size=1)
+        list(segs)                      # transcribe e um gerador preguicoso: e preciso consumir p/ encodar
 
     def transcribe(self, wav):
-        segs, _ = self.model.transcribe(np.asarray(wav, dtype=np.float32), language="pt", beam_size=1,
-                                        condition_on_previous_text=False)
-        return " ".join(s.text.strip() for s in segs).strip()
+        audio = np.asarray(wav, dtype=np.float32)
+        opts = dict(language="pt", beam_size=self.beam, condition_on_previous_text=False)
+        try:
+            segs, _ = self.model.transcribe(audio, hotwords=DIGIT_HOTWORDS, **opts)
+        except TypeError:                                   # faster-whisper antigo: sem hotwords
+            segs, _ = self.model.transcribe(audio, **opts)
+        try:
+            return " ".join(s.text.strip() for s in segs).strip()
+        except RuntimeError:
+            # lib CUDA caiu no meio do uso (raro): tenta uma vez na CPU
+            if self.device != "cuda":
+                raise
+            print("Falha na GPU durante a transcricao; refazendo na CPU.")
+            self.device, self.compute = "cpu", "int8"
+            self.model = self._build("cpu", self.compute)
+            return self.transcribe(audio)
 
 
 _WORDS = {"zero": 0, "um": 1, "uma": 1, "dois": 2, "duas": 2, "tres": 3, "quatro": 4, "cinco": 5,

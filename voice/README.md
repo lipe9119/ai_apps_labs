@@ -1,6 +1,6 @@
 # Voice Lab
 
-Estudo de reconhecimento de voz em 4 niveis, no mesmo formato do Face Lab. Tudo roda em CPU.
+Estudo de reconhecimento de voz em 4 niveis, no mesmo formato do Face Lab. Por padrao roda em CPU; opcionalmente o Whisper (transcricao) usa a GPU — veja "Whisper: modelo e GPU".
 
 ## Instalar (Python >= 3.11)
 
@@ -29,7 +29,47 @@ Se der erro de permissao/symlink no Windows, ative o Modo Desenvolvedor ou rode 
 | 4 | `python level4_face_voice.py` | ROSTO + VOZ: face liveness, depois digitos + voz + sincronia labial |
 
 Opcoes em todos: `--list-devices` e `--device N` para escolher o microfone.
+Nos niveis 3 e 4, o Whisper aceita `--whisper MODELO`, `--whisper-device auto|cuda|cpu`,
+`--whisper-compute`, `--whisper-threads` e `--whisper-beam` (veja a proxima secao).
 Os cadastros ficam em `data/voices.json` (so vetores de 192 numeros, nenhum audio).
+
+## Whisper: modelo e GPU (opcional)
+
+O modelo padrao e o `base` (CPU, rapido e leve). Modelos maiores transcrevem melhor os digitos,
+mas pesam mais. Para escolher sem adivinhar, compare na sua maquina:
+
+| Modelo | Tamanho aprox. | Quando usar |
+|---|---|---|
+| `tiny` | ~75 MB | so para testar o fluxo |
+| `base` | ~140 MB | padrao, CPU |
+| `small` | ~500 MB | melhor precisao, ainda leve |
+| `medium` | ~1.5 GB | preciso; melhor com GPU |
+| `large-v3` | ~3 GB | maxima precisao; GPU recomendada |
+| `distil-large-v3` | ~1.5 GB | quase large e mais rapido (GPU) |
+| `large-v3-turbo` | ~1.6 GB | otimo custo/beneficio em GPU |
+
+Comparar velocidades (grava 6 s do microfone e transcreve com varios modelos):
+
+```
+python bench_whisper.py --seconds 6 --models tiny,base,small,medium,large-v3-turbo
+python bench_whisper.py --wav minha_fala.wav --models large-v3-turbo,distil-large-v3 --whisper-device cuda --runs 3
+```
+
+Usar num nivel (ex.: nivel 3 na GPU com o turbo):
+
+```
+python level3_voice_challenge.py --whisper large-v3-turbo --whisper-device cuda
+```
+
+Na GPU o `compute_type` vira `float16` sozinho; `auto` tenta a GPU e, se faltar lib CUDA, cai para a CPU
+com um aviso. As libs CUDA 12 (cublas/cudnn) instaladas via pip no venv ja sao carregadas automaticamente;
+fora do venv, garanta `libcublas.so.12` e `libcudnn.so.9` no `LD_LIBRARY_PATH`.
+
+Tambem da para fixar tudo por variaveis de ambiente, sem mexer no codigo:
+
+```
+WHISPER_MODEL=small WHISPER_DEVICE=cuda python level3_voice_challenge.py
+```
 
 ## Nivel 4: requisitos
 
@@ -49,7 +89,8 @@ Os cadastros ficam em `data/voices.json` (so vetores de 192 numeros, nenhum audi
 ## Ajustes (topo de `vcommon.py`)
 
 - Voce nao e reconhecido / outros passam: `VOICE_THRESHOLD` (use o nivel 2 verify para ver os scores reais).
-- Whisper erra os digitos: `WHISPER_MODEL = "small"` ou `MAX_DIGIT_ERRORS = 1`.
+- Whisper erra os digitos: modelo maior (`--whisper small` ou `--whisper large-v3-turbo` na GPU) ou `MAX_DIGIT_ERRORS = 1`.
+  A lista de hotwords com os numerais (`DIGIT_HOTWORDS`) e o `beam_size` tambem ajudam.
 - Sincronia labial reprova voce ou aprova demais: `LIPSYNC_MIN_CORR` e `MIN_MAR_RANGE` (os valores medidos aparecem na tela).
 - Microfone ruim / ambiente barulhento: `ENERGY_MIN` e o agressividade do VAD (`UtteranceDetector(aggressiveness=...)`).
 

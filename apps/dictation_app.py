@@ -73,8 +73,8 @@ from PySide6.QtWidgets import (  # noqa: E402
     QWidget,
 )
 
-MODELS = ("tiny", "base", "small")
-DEFAULT_MODEL = "base"
+MODELS = ("tiny", "base", "small", "large-v3-turbo")
+DEFAULT_MODEL = "large-v3-turbo"
 DEFAULT_LANG = "pt"
 SILENCE_END = 0.7  # pausa (s) que fecha um trecho
 MAX_SEGMENT_S = 15.0  # teto de duracao de um trecho
@@ -318,7 +318,7 @@ class Worker(QObject):
         self._last_t = None
         self._last_partial = 0.0
         self._partial_in_flight = False
-        self._job_seq = 0      # id monotono dos commits (nao reseta entre gravacoes)
+        self._job_seq = 0  # id monotono dos commits (nao reseta entre gravacoes)
         self._last_job = None  # ultimo commit enfileirado nesta gravacao
         self._jobs_done = set()  # preenchido pelo handler, sempre na thread do worker
         self._rolling = np.zeros(int(vc.SR * WAVE_SECONDS), np.float32)

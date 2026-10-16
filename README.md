@@ -35,6 +35,16 @@ uv sync
 - Prefere venv classico? `python -m venv .venv && source .venv/bin/activate && pip install -e .`
 - Microfone com varios aparelhos: todos os scripts aceitam `--list-devices` e `--device N`.
 
+### Por que o PySide6 esta fixado em `>=6.11.2,<6.12`
+
+O PySide6 **6.12.0** tem uma regressao no Linux: qualquer `QWidget` com `paintEvent` sobrescrito em
+Python que usa `QPainter` derruba o processo com `Fatal Python error: none_dealloc: deallocating
+None`. O ditado desenha a onda no `paintEvent`, entao o app fecha logo ao abrir.
+
+No macOS e no Windows a 6.12.0 nao apresenta esse defeito, mas **6.11.2 tambem funciona nos tres
+sistemas** (tem wheels para Linux x86_64/aarch64, macOS universal2 e Windows amd64/arm64), entao a
+fixacao vale para todos. Quando sair uma 6.12.x corrigida, teste de novo e suba o limite superior.
+
 ## Face Lab (`face/`)
 
 | Nivel | Comando | O que faz |
