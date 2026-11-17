@@ -402,7 +402,7 @@ class Worker(QObject):
             self._finalize_session()
         else:
             self.status.emit("Finalizando...")
-            self.btn_rec.setEnabled(False)
+            # o btn_rec e desabilitado pela MainWindow em _on_status("Finalizando...")
 
     @Slot(object)
     def set_device(self, device):
