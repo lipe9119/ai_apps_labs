@@ -637,6 +637,7 @@ class MainWindow(QMainWindow):
         self._recording = False
         self._closing = False
         self._t0 = 0.0
+        self._elapsed_frozen = 0.0   # tempo congelado ao parar (exibido enquanto finaliza)
         self._committed = []
         self._partial = ""
         self._ready_mic = False
@@ -686,6 +687,12 @@ class MainWindow(QMainWindow):
         self.cmb_model.currentTextChanged.connect(self._on_model_change)
         top.addWidget(self.cmb_model)
         lay.addLayout(top)
+
+        self.lbl_download = QLabel("")
+        self.lbl_download.setObjectName("download")
+        self.lbl_download.setAlignment(Qt.AlignCenter)
+        self.lbl_download.hide()
+        lay.addWidget(self.lbl_download)
 
         self.scope = Scope()
         lay.addWidget(self.scope)
@@ -825,17 +832,24 @@ class MainWindow(QMainWindow):
         )
         if msg == "Gravando":
             self._recording, self._t0 = True, time.time()
+            self._elapsed_frozen = 0.0
             self.scope.set_recording(True)
             self.btn_rec.setText("PARAR")
             self.cmb_device.setEnabled(False)
             self.cmb_model.setEnabled(False)
         elif msg == "Finalizando...":
             self.btn_rec.setEnabled(False)
+            self.cmb_device.setEnabled(False)
+            self.cmb_model.setEnabled(False)
+            self.scope.set_recording(False)
+            # congela o cronômetro no valor atual
+            self._recording = False
+            self._elapsed_frozen = time.time() - self._t0
         elif msg in ("Pronto", "Salvo"):
             self.btn_rec.setEnabled(True)
-            if self._recording:
-                self._recording = False
-                self.scope.set_recording(False)
+            self._recording = False
+            self._elapsed_frozen = 0.0
+            self.scope.set_recording(False)
             self.btn_rec.setText("GRAVAR")
             self.btn_rec.setChecked(False)
             self.cmb_device.setEnabled(True)
@@ -847,6 +861,7 @@ class MainWindow(QMainWindow):
 
     def _on_model_ready(self, _model=""):
         self._ready_model = True
+        self.lbl_download.hide()
         self._maybe_ready()
 
     def _maybe_ready(self):
@@ -859,6 +874,10 @@ class MainWindow(QMainWindow):
             return
         self._ready_model = False
         self.btn_rec.setEnabled(False)
+        self.cmb_model.setEnabled(False)
+        self.cmb_device.setEnabled(False)
+        self.lbl_download.setText(f"Baixando modelo Whisper '{size}'...")
+        self.lbl_download.show()
         self._on_status(f"Carregando modelo Whisper '{size}'...")
         self.req_model.emit(size)
 
@@ -932,7 +951,10 @@ class MainWindow(QMainWindow):
         bar.setValue(bar.maximum())
 
     def _tick(self):
-        elapsed = (time.time() - self._t0) if self._recording else 0.0
+        if self._recording:
+            elapsed = time.time() - self._t0
+        else:
+            elapsed = self._elapsed_frozen
         words = getattr(self, "_words", len(" ".join(self._committed).split()))
         self.lbl_info.setText(
             f"{int(elapsed) // 60:02d}:{int(elapsed) % 60:02d}  ·  {words} palavras"
@@ -969,6 +991,7 @@ QLabel#pill { background: #232830; color: #cbd2dc; border: 1px solid #2f3640;
               border-radius: 12px; padding: 4px 14px; font-weight: 600; }
 QLabel#info { color: #8b929c; }
 QLabel#proc { color: #d0a215; font-size: 12px; }
+QLabel#download { color: #d0a215; font-size: 13px; font-weight: 600; }
 QLabel#hint { color: #5b6472; font-size: 11px; }
 QTextEdit#transcript { background: #1a1d22; border: 1px solid #2a2f37; border-radius: 10px;
                        color: #e8eaed; font-size: 16px; padding: 12px; }
