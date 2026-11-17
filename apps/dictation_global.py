@@ -51,7 +51,7 @@ from pynput import keyboard  # noqa: E402  (atalho global)
 
 MODELS = ("tiny", "base", "small", "large-v3-turbo")
 DEFAULT_MODEL = "base"
-DEFAULT_HOTKEY = "<cmd>+<shift>+d" if sys.platform == "darwin" else "<ctrl>+<shift>+d"
+DEFAULT_HOTKEY = "<cmd>+<shift>+." if sys.platform == "darwin" else "<ctrl>+<shift>+."
 SILENCE_END = 0.7
 MAX_SEGMENT_S = 15.0
 PARTIAL_EVERY = 1.2
