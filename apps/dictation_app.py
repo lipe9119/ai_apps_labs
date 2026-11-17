@@ -84,17 +84,23 @@ WAVE_SECONDS = 4.0
 
 
 class Transcriber(vc.Transcriber):
-    """O Transcriber do vcommon fixa portugues; aqui o idioma e configuravel."""
+    """O Transcriber do vcommon fixa portugues; aqui o idioma e configuravel.
 
-    def __init__(self, size=DEFAULT_MODEL, lang=DEFAULT_LANG):
-        super().__init__(size)
+    device/compute/threads/beam sao repassados ao WhisperModel do vcommon
+    (cuda/cpu, float16/int8, threads de CPU e beam size).
+    """
+
+    def __init__(self, size=DEFAULT_MODEL, lang=DEFAULT_LANG, device="auto",
+                 compute="auto", threads=None, beam=1):
+        super().__init__(size, device=device, compute=compute, threads=threads, beam=beam)
         self.lang = lang
+        self.beam = beam
 
     def transcribe(self, wav):
         segs, _ = self.model.transcribe(
             np.asarray(wav, dtype=np.float32),
             language=self.lang or None,
-            beam_size=1,
+            beam_size=self.beam,
             condition_on_previous_text=False,
         )
         return " ".join(s.text.strip() for s in segs).strip()
@@ -186,10 +192,15 @@ class Stt(QObject):
     commit_done = Signal(int)
     selftest_done = Signal()
 
-    def __init__(self, model_size, lang):
+    def __init__(self, model_size, lang, device="auto", compute="auto",
+                 threads=None, beam=1):
         super().__init__()
         self.model_size = model_size
         self.lang = lang
+        self.device = device
+        self.compute = compute
+        self.threads = threads
+        self.beam = beam
         self._stt = None
         self._timer = None
         self._commits = deque()
@@ -209,7 +220,10 @@ class Stt(QObject):
     @Slot()
     def start(self):
         try:
-            self._stt = Transcriber(self.model_size, self.lang)
+            self._stt = Transcriber(
+                self.model_size, self.lang, self.device, self.compute,
+                self.threads, self.beam,
+            )
         except Exception as e:  # noqa: BLE001
             self.error.emit(f"Falha ao carregar o modelo Whisper: {e}")
             return
@@ -225,7 +239,8 @@ class Stt(QObject):
             return
         self._paused = True
         try:
-            stt = Transcriber(size, self.lang)
+            stt = Transcriber(size, self.lang, self.device, self.compute,
+                              self.threads, self.beam)
         except Exception as e:  # noqa: BLE001
             self.error.emit(f"Falha ao carregar o modelo Whisper: {e}")
             self._paused = False
@@ -377,24 +392,17 @@ class Worker(QObject):
             return
         self.recording = False
         self._partial_in_flight = False
-        # Enfileira o que ainda estava falando e ESPERA TODA a fila de
-        # transcricao terminar antes de fechar os arquivos: sem isso, trechos
-        # que ja estavam na fila (VAD ja tinha fechado) chegavam depois do
-        # close e se perdiam do .txt. O loop de eventos desta thread continua
-        # rodando durante a espera, entao a interface nao trava e os resultados
-        # vao gravando na hora.
+        # Enfileira o que ainda estava falando e para de consumir o microfone
+        # imediatamente. Nao bloqueia aqui esperando a fila: os commits ja
+        # enfileirados continuam processando em segundo plano e, quando o
+        # ultimo terminar, _finalize_session fecha os arquivos e libera o botao.
         self._commit_pending()
         self._seg_start = None
-        if self._last_job is not None and self._last_job not in self._jobs_done:
+        if self._last_job is None or self._last_job in self._jobs_done:
+            self._finalize_session()
+        else:
             self.status.emit("Finalizando...")
-            self._wait_queue()
-        paths = self.session.close() if self.session else None
-        self.session = None
-        self.det.reset()
-        self.status.emit("Salvo")
-        if paths:
-            self.saved.emit(paths)
-        self.stats.emit({"recording": False, "elapsed": 0.0, "words": 0})
+            self.btn_rec.setEnabled(False)
 
     @Slot(object)
     def set_device(self, device):
@@ -429,6 +437,15 @@ class Worker(QObject):
     @Slot(int)
     def _on_commit_done(self, job_id):
         self._jobs_done.add(job_id)
+        # Quando nao esta mais gravando e o ultimo commit da fila terminou,
+        # fecha a sessao e libera o botao para uma nova gravacao.
+        if (
+            not self.recording
+            and self._last_job is not None
+            and self._last_job in self._jobs_done
+            and self.session is not None
+        ):
+            QTimer.singleShot(0, self._finalize_session)
 
     # ------------------------------------------------------------ loop
     @Slot()
@@ -515,29 +532,17 @@ class Worker(QObject):
             return self._submit_commit(audio, self._seg_start, end)
         return None
 
-    def _wait_queue(self):
-        """Espera TODA a fila de transcricao terminar, processando os eventos
-        desta thread (cada resultado chega e e gravado durante a espera)."""
-        if self._last_job is None or self._last_job in self._jobs_done:
-            return
-        loop = QEventLoop()
-        timer = QTimer()
-        timer.setInterval(50)
-        deadline = time.time() + 120
-
-        def check():
-            if self._last_job in self._jobs_done or time.time() > deadline:
-                timer.stop()
-                loop.quit()
-
-        timer.timeout.connect(check)
-        timer.start()
-        loop.exec()
-        if self._last_job not in self._jobs_done:
-            print(
-                "[aviso] fila de transcricao nao terminou no tempo limite",
-                file=sys.stderr,
-            )
+    def _finalize_session(self):
+        """Fecha a sessao de gravacao (.wav/.txt/.json) e libera a UI.
+        Chamado so depois de a fila de transcricao esvaziar (ou imediatamente
+        se nao houver commits pendentes)."""
+        paths = self.session.close() if self.session else None
+        self.session = None
+        self.det.reset()
+        self.status.emit("Salvo")
+        if paths:
+            self.saved.emit(paths)
+        self.stats.emit({"recording": False, "elapsed": 0.0, "words": 0})
 
 
 class Scope(QWidget):
@@ -620,6 +625,10 @@ class MainWindow(QMainWindow):
         lang=DEFAULT_LANG,
         out_dir=None,
         selftest=False,
+        whisper_device="auto",
+        whisper_compute="auto",
+        whisper_threads=None,
+        whisper_beam=1,
     ):
         super().__init__()
         self.setWindowTitle("Ditado - transcricao ao vivo")
@@ -635,7 +644,11 @@ class MainWindow(QMainWindow):
 
         self._build_ui()
         self._populate_devices(device)
-        self._start_worker(device, model, lang, open_mic=not selftest)
+        self._start_worker(
+            device, model, lang, open_mic=not selftest,
+            whisper_device=whisper_device, whisper_compute=whisper_compute,
+            whisper_threads=whisper_threads, whisper_beam=whisper_beam,
+        )
         self._on_status(f"Carregando modelo Whisper '{model}'...")
 
         self._ui_timer = QTimer(self)
@@ -688,6 +701,7 @@ class MainWindow(QMainWindow):
         self.btn_rec.setObjectName("rec")
         self.btn_rec.setCheckable(True)
         self.btn_rec.clicked.connect(self._toggle)
+        self.btn_rec.setEnabled(False)  # so libera quando mic + modelo estao prontos
         bottom.addWidget(self.btn_rec)
         self.btn_open = QPushButton("Abrir pasta")
         self.btn_open.clicked.connect(self._open_folder)
@@ -725,10 +739,13 @@ class MainWindow(QMainWindow):
             if idx >= 0:
                 self.cmb_device.setCurrentIndex(idx)
 
-    def _start_worker(self, device, model, lang, open_mic):
+    def _start_worker(self, device, model, lang, open_mic,
+                      whisper_device="auto", whisper_compute="auto",
+                      whisper_threads=None, whisper_beam=1):
         # thread do Whisper (transcricao) - separada do microfone de proposito
         self.stt_thread = QThread(self)
-        self.stt = Stt(model, lang)
+        self.stt = Stt(model, lang, whisper_device, whisper_compute,
+                       whisper_threads, whisper_beam)
         self.stt.moveToThread(self.stt_thread)
         self.stt_thread.started.connect(self.stt.start)
 
@@ -984,6 +1001,24 @@ def main():
     )
     p.add_argument("--lang", default=DEFAULT_LANG, help="idioma da fala (ex: pt, en)")
     p.add_argument(
+        "--whisper-device", choices=("auto", "cuda", "cpu"), default="auto",
+        help="onde rodar o Whisper (padrao: auto = tenta a GPU)",
+    )
+    p.add_argument(
+        "--whisper-compute",
+        choices=("auto", "int8", "int8_float16", "float16", "float32"),
+        default="auto",
+        help="precisao do Whisper (padrao: auto = float16 na GPU, int8 na CPU)",
+    )
+    p.add_argument(
+        "--whisper-threads", type=int, default=None,
+        help="threads de CPU para o Whisper (padrao: automatico)",
+    )
+    p.add_argument(
+        "--whisper-beam", type=int, default=1,
+        help="beam size do Whisper (padrao: 1 = mais rapido)",
+    )
+    p.add_argument(
         "--out",
         default=str(Path(__file__).resolve().parent / "data" / "transcricoes"),
         help="pasta onde salvar as gravacoes",
@@ -1018,7 +1053,11 @@ def main():
     app.setFont(QFont(family, 13))
     app.setStyleSheet(STYLE)
 
-    win = MainWindow(device, a.model, a.lang, a.out, selftest=a.selftest)
+    win = MainWindow(
+        device, a.model, a.lang, a.out, selftest=a.selftest,
+        whisper_device=a.whisper_device, whisper_compute=a.whisper_compute,
+        whisper_threads=a.whisper_threads, whisper_beam=a.whisper_beam,
+    )
     win.show()
 
     if a.selftest:

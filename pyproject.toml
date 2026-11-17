@@ -3,7 +3,7 @@ name = "face-lab"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = "==3.11.*"
 dependencies = [
     "click>=8.5.0",
     "dlib-bin>=20.0.1.post1",
@@ -24,4 +24,6 @@ dependencies = [
     "torchaudio==2.8",
     "webrtcvad>=2.0.10",
     "webrtcvad-wheels>=2.0.14.post1",
+    "pynput>=1.8.2",
+    "pyautogui>=0.9.54",
 ]
