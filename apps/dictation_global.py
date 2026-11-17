@@ -101,26 +101,40 @@ class HotkeyListener(QObject):
     @Slot()
     def start(self):
         # No Linux, o GlobalHotKeys do pynput requer X11. Em Wayland ou sem
-        # display X11 disponível, ele levanta excecao ou falha silenciosamente.
+        # display X11 disponível, ele falha silenciosamente (sem erro, o atalho
+        # simplesmente nao dispara).
         if sys.platform.startswith("linux"):
             import os as _os
-            if not _os.environ.get("DISPLAY") and not _os.environ.get("WAYLAND_DISPLAY"):
+            session = _os.environ.get("XDG_SESSION_TYPE", "desconhecido")
+            display = _os.environ.get("DISPLAY", "")
+            wayland = _os.environ.get("WAYLAND_DISPLAY", "")
+            print(f"[dictation_global] Linux: sessao={session}, DISPLAY={display!r}, "
+                  f"WAYLAND_DISPLAY={wayland!r}")
+            if session == "wayland" or wayland:
                 self.error.emit(
-                    "Nenhum display X11/Wayland detectado. "
-                    "O atalho global requer um servidor gráfico em execução."
+                    "Atalho global nao funciona em Wayland (limitacao do protocolo). "
+                    "Use uma sessao X11 ou configure um atalho do ambiente de desktop "
+                    "que execute este mesmo comando."
+                )
+                return
+            if not display:
+                self.error.emit(
+                    "Nenhum display X11 detectado (variavel DISPLAY nao definida)."
                 )
                 return
             try:
-                import Xlib.display  # noqa: F401  (verifica se python3-xlib está instalado)
+                import Xlib.display  # noqa: F401  (verifica se python3-xlib esta instalado)
             except ImportError:
                 self.error.emit(
                     "pynput requer python3-xlib no Linux. Instale com: "
-                    "sudo apt-get install python3-xlib  (ou equivalente na sua distro)"
+                    "sudo apt-get install python3-xlib  (Debian/Ubuntu) ou "
+                    "sudo dnf install python3-xlib  (Fedora)"
                 )
                 return
         try:
             self._listener = keyboard.GlobalHotKeys({self.hotkey: self._on_activate})
             self._listener.start()
+            print(f"[dictation_global] atalho global registrado: {self.hotkey}")
         except Exception as e:  # noqa: BLE001
             self.error.emit(f"Falha ao registrar atalho global '{self.hotkey}': {e}")
 
