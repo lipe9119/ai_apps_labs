@@ -11,6 +11,12 @@ Fluxo:
 Requisitos no macOS: conceda permissao de Acessibilidade ao terminal/IDE em
 Preferencias do Sistema > Privacidade e Seguranca > Acessibilidade.
 
+Requisitos no Linux: o atalho global requer um servidor X11 em execução e
+o pacote python3-xlib. Em Wayland, o pynput nao consegue capturar teclas
+globais (limitacao do protocolo Wayland). Instale com:
+  sudo apt-get install python3-xlib  (Debian/Ubuntu)
+  sudo dnf install python3-xlib        (Fedora)
+
 Uso:
   python apps/dictation_global.py
   python apps/dictation_global.py --model base --hotkey <cmd>+<shift>+d
@@ -94,6 +100,24 @@ class HotkeyListener(QObject):
 
     @Slot()
     def start(self):
+        # No Linux, o GlobalHotKeys do pynput requer X11. Em Wayland ou sem
+        # display X11 disponível, ele levanta excecao ou falha silenciosamente.
+        if sys.platform.startswith("linux"):
+            import os as _os
+            if not _os.environ.get("DISPLAY") and not _os.environ.get("WAYLAND_DISPLAY"):
+                self.error.emit(
+                    "Nenhum display X11/Wayland detectado. "
+                    "O atalho global requer um servidor gráfico em execução."
+                )
+                return
+            try:
+                import Xlib.display  # noqa: F401  (verifica se python3-xlib está instalado)
+            except ImportError:
+                self.error.emit(
+                    "pynput requer python3-xlib no Linux. Instale com: "
+                    "sudo apt-get install python3-xlib  (ou equivalente na sua distro)"
+                )
+                return
         try:
             self._listener = keyboard.GlobalHotKeys({self.hotkey: self._on_activate})
             self._listener.start()
