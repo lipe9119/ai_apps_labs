@@ -12,8 +12,16 @@ Requisitos no macOS: conceda permissao de Acessibilidade ao terminal/IDE em
 Preferencias do Sistema > Privacidade e Seguranca > Acessibilidade.
 
 Requisitos no Linux: o atalho global requer um servidor X11 em execução e
-o pacote python3-xlib. Em Wayland, o pynput nao consegue capturar teclas
-globais (limitacao do protocolo Wayland). Instale com:
+o pacote python3-xlib. Em Wayland (incluindo Cosmic/Pop!_OS), o pynput nao
+consegue capturar teclas globais (limitacao de seguranca do protocolo).
+Alternativa: rode o app e configure no Cosmic um atalho de teclado que
+execute:
+
+    pkill -USR1 -f dictation_global.py
+
+Isso alterna gravacao/parada via sinal SIGUSR1. Instale o python3-xlib se
+quiser tentar o atalho global em X11:
+
   sudo apt-get install python3-xlib  (Debian/Ubuntu)
   sudo dnf install python3-xlib        (Fedora)
 
@@ -27,6 +35,7 @@ Uso:
 from __future__ import annotations
 
 import argparse
+import signal
 import sys
 import time
 from collections import deque
@@ -515,7 +524,14 @@ class DictationGlobalApp(QObject):
         self._recording = False
         print(f"[dictation_global] atalho: {self.hotkey}")
         print("[dictation_global] pressione o atalho para iniciar/parar a gravacao")
+        if sys.platform.startswith("linux"):
+            print("[dictation_global] em Wayland, use: pkill -USR1 -f dictation_global.py")
         print("[dictation_global] pressione Ctrl+C neste terminal para sair")
+
+    def _on_sigusr1(self, _signum, _frame):
+        # Toggle de gravação via sinal SIGUSR1 (útil em Wayland, onde o
+        # atalho global do pynput não funciona).
+        QMetaObject.invokeMethod(self.engine, "toggle", Qt.QueuedConnection)
 
     def _on_segment(self, text):
         # Digita o texto transcrito no campo de texto que estiver em foco.
@@ -537,6 +553,12 @@ class DictationGlobalApp(QObject):
         print(f"[dictation_global] {estado}")
 
     def run(self):
+        # Em Linux/Wayland, SIGUSR1 alterna a gravacao (atalho global nao
+        # funciona em Wayland). Configure no Cosmic um atalho que rode:
+        #   pkill -USR1 -f dictation_global.py
+        if sys.platform.startswith("linux"):
+            signal.signal(signal.SIGUSR1, self._on_sigusr1)
+
         # Mantem o loop do Qt rodando. Ctrl+C no terminal encerra.
         try:
             self._app.exec()
